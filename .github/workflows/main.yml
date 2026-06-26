@@ -75,15 +75,17 @@ jobs:
             immortalwrt/imagebuilder:x86-64-openwrt-${luci_version} /bin/bash /home/build/immortalwrt/build.sh
 
       # =======================================================
-      # ✨ 核心控制：精准提取 .img.gz 并生成 Release 标签
+      # ✨ 核心修正：多层通配符彻底解决新老版本输出路径不一致导致的无法复制问题
       # =======================================================
       - name: ✅ 精准限制：提取唯一 .img.gz 固件
         id: tag
         run: |
-          # 只把唯一的压缩包复制到宿主机根目录，把别的垃圾文件留在 bin 里随着 Docker 销毁而气化
-          cp ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz ${{ github.workspace }}/
+          # 25.12.x 的新路径通常是 bin/targets/x86_64/generic/
+          # 采用深度多级通配，不管老路径新路径，全盘精准捕捉
+          cp ${{ github.workspace }}/bin/targets/*/*/*squashfs-combined-efi.img.gz ${{ github.workspace }}/ || \
+          cp ${{ github.workspace }}/bin/targets/*/*/*/*squashfs-combined-efi.img.gz ${{ github.workspace }}/
           
-          # 生成唯一的日期时间标签（例如 2026.06.26-1500）
+          # 生成唯一的日期时间标签
           echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
       - name: 🚀 自动发布 .img.gz 固件到 GitHub Release
@@ -99,6 +101,6 @@ jobs:
             - **输出格式**: `📦 .img.gz 压缩包`
             - **内置本地精选插件**: OpenClash, AdGuardHome, Passwall, Samba4, Docker
           files: |
-            # 严格限制：只发布我们复制出来的 .img.gz 压缩包
+            # 只发布筛选到根目录下的那个唯一的 img.gz 包
             *-squashfs-combined-efi.img.gz
           token: ${{ secrets.GITHUB_TOKEN }}
