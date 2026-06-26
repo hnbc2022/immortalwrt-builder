@@ -75,17 +75,26 @@ jobs:
             immortalwrt/imagebuilder:x86-64-openwrt-${luci_version} /bin/bash /home/build/immortalwrt/build.sh
 
       # =======================================================
-      # ✨ 核心修正：多层通配符彻底解决新老版本输出路径不一致导致的无法复制问题
+      # ✨ 增加探测逻辑：如果找不到，就打印全部目录树，暴露出问题
       # =======================================================
       - name: ✅ 精准限制：提取唯一 .img.gz 固件
         id: tag
         run: |
-          # 25.12.x 的新路径通常是 bin/targets/x86_64/generic/
-          # 采用深度多级通配，不管老路径新路径，全盘精准捕捉
-          cp ${{ github.workspace }}/bin/targets/*/*/*squashfs-combined-efi.img.gz ${{ github.workspace }}/ || \
-          cp ${{ github.workspace }}/bin/targets/*/*/*/*squashfs-combined-efi.img.gz ${{ github.workspace }}/
+          echo "🔍 正在全盘检索 bin 目录下的实际生成文件..."
+          find ${{ github.workspace }}/bin -type f || echo "❌ bin 目录内空空如也！"
           
-          # 生成唯一的日期时间标签
+          echo "🚚 尝试复制固件..."
+          # 尝试多种可能的后缀形式进行复制
+          find ${{ github.workspace }}/bin -name "*combined*.img.gz" -exec cp {} ${{ github.workspace }}/ \;
+          
+          # 检查是否成功复制到了根目录
+          if ls ${{ github.workspace }}/*combined*.img.gz 1>/dev/null 2>&1; then
+            echo "✅ 固件成功提取到根目录！"
+          else
+            echo "❌ 提取失败，说明前置 Docker 编译根本没有输出有效固件！"
+            exit 1
+          fi
+          
           echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
       - name: 🚀 自动发布 .img.gz 固件到 GitHub Release
@@ -95,12 +104,9 @@ jobs:
           name: "ImmortalWrt 固件 [${{ github.event.inputs.luci_version }}] (.img.gz)"
           body: |
             ## 固件云编译成功！🎉
-            
             - **LuCI 核心基础**: `${{ github.event.inputs.luci_version }}`
             - **网络默认静态 IP**: `192.168.15.15`
             - **输出格式**: `📦 .img.gz 压缩包`
-            - **内置本地精选插件**: OpenClash, AdGuardHome, Passwall, Samba4, Docker
           files: |
-            # 只发布筛选到根目录下的那个唯一的 img.gz 包
-            *-squashfs-combined-efi.img.gz
+            *combined*.img.gz
           token: ${{ secrets.GITHUB_TOKEN }}
