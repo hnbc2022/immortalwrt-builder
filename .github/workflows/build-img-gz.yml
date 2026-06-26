@@ -1,5 +1,5 @@
 # 此工作流完全模仿本地 wubuntu 实体机运行逻辑
-# 补充了 qemu-utils 依赖，解决 25.12.0 官方底层 Makefile 强行依赖 qemu-img 导致报错 Error 1 的问题
+# 补充安装 genisoimage 依赖，彻底打通 25.12.0 编译器底层强制调用 mkisofs 导致的 Error 127 卡点
 name: Build 25.12.x IMG.GZ x86-64
 
 on:
@@ -29,13 +29,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: ⚙️ 安装本地编译与 Zstd/Qemu 转换所需依赖 (完全模拟 wubuntu 环境)
+      - name: ⚙️ 安装本地编译与多格式过渡打包所需依赖 (完全模拟 wubuntu 环境)
         run: |
           sudo apt-get update
-          # ✨ 核心修复：在此处追加安装了 qemu-utils 包
+          # ✨ 核心修复：追加安装 genisoimage 解决 mkisofs 缺失问题
           sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
             zlib1g-dev gawk git gettext libssl-dev xz-utils patch unzip subversion \
-            flex bison python3 python3-pip wget zstd qemu-utils
+            flex bison python3 python3-pip wget zstd qemu-utils genisoimage mtools
 
       - name: ⏬ 官仓直供：使用直接链接下载新版 Zst 编译器
         run: |
@@ -79,8 +79,10 @@ jobs:
         run: |
           TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64"
           
+          # 只捞取目标 ext4 压缩包
           find "$TARGET_DIR/bin/targets" -name "*ext4-combined-efi.img.gz" -exec cp {} ${{ github.workspace }}/ \;
           
+          # 安全校验机制
           if ls ${{ github.workspace }}/*ext4-combined-efi.img.gz 1>/dev/null 2>&1; then
             echo "✅ 成功提取到唯一的 ext4 固件包！"
             ls -lh ${{ github.workspace }}/*ext4-combined-efi.img.gz
