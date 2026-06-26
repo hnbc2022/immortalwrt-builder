@@ -1,5 +1,5 @@
 # 此工作流完全模仿本地 wubuntu 实体机运行逻辑
-# 锁定官方 25.12.0 最新固件的 .tar.zst 编译器格式，编译后只发布 ext4-combined-efi.img.gz
+# 补充了 qemu-utils 依赖，解决 25.12.0 官方底层 Makefile 强行依赖 qemu-img 导致报错 Error 1 的问题
 name: Build 25.12.x IMG.GZ x86-64
 
 on:
@@ -29,19 +29,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: ⚙️ 安装本地编译与 Zstd 解压所需依赖 (完全模拟 wubuntu 环境)
+      - name: ⚙️ 安装本地编译与 Zstd/Qemu 转换所需依赖 (完全模拟 wubuntu 环境)
         run: |
           sudo apt-get update
+          # ✨ 核心修复：在此处追加安装了 qemu-utils 包
           sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
             zlib1g-dev gawk git gettext libssl-dev xz-utils patch unzip subversion \
-            flex bison python3 python3-pip wget zstd
+            flex bison python3 python3-pip wget zstd qemu-utils
 
       - name: ⏬ 官仓直供：使用直接链接下载新版 Zst 编译器
         run: |
           mkdir -p /home/runner/immortalwrt_build
           cd /home/runner/immortalwrt_build
           
-          # 完全锁定你提供的官方最新直接链接
           URL="https://downloads.immortalwrt.org/releases/25.12.0/targets/x86/64/immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64.tar.zst"
           
           echo "📥 正在通过直接链接下载官仓 Zst 编译器..."
@@ -61,7 +61,6 @@ jobs:
           [ -d "${{ github.workspace }}/files" ] && cp -r ${{ github.workspace }}/files/* "$TARGET_DIR/files/" || true
           [ -d "${{ github.workspace }}/shell" ] && cp -r ${{ github.workspace }}/shell/* "$TARGET_DIR/shell/" || true
           
-          # 将核心编译脚本送入工作目录
           cp ${{ github.workspace }}/x86-64/build25.sh "$TARGET_DIR/build25.sh"
           chmod +x "$TARGET_DIR/build25.sh"
 
@@ -80,10 +79,8 @@ jobs:
         run: |
           TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64"
           
-          # 只捞取目标 ext4 压缩包
           find "$TARGET_DIR/bin/targets" -name "*ext4-combined-efi.img.gz" -exec cp {} ${{ github.workspace }}/ \;
           
-          # 安全校验机制
           if ls ${{ github.workspace }}/*ext4-combined-efi.img.gz 1>/dev/null 2>&1; then
             echo "✅ 成功提取到唯一的 ext4 固件包！"
             ls -lh ${{ github.workspace }}/*ext4-combined-efi.img.gz
@@ -92,7 +89,6 @@ jobs:
             exit 1
           fi
           
-          # 生成发布时间戳作为 Release Tag
           echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
       - name: 🚀 自动发布 .img.gz 固件到 Releases 页面
@@ -105,7 +101,6 @@ jobs:
             
             - **文件系统类型**: `📦 EXT4 (支持系统内直接自由扩容)`
             - **网关默认静态 IP**: `192.168.15.15`
-            - **底座编译器**: 基于官方全新的 `.tar.zst` 容器构建
           files: |
             *ext4-combined-efi.img.gz
           token: ${{ secrets.GITHUB_TOKEN }}
