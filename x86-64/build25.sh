@@ -2,24 +2,15 @@
 # ==========================================
 # 1. 基础环境与网络准备
 # ==========================================
-# 纯透明网关模式：不设置任何局部代理变量
 unset http_proxy
 unset https_proxy
 
 echo "🔄 [第一遍运行] 正在初始化全新编译环境..."
-
-# 终极修复：如果工作流传过来了确切的版本号，直接使用；否则再尝试解析目录名
-if [ -n "$VERSION_INPUT" ]; then
-    VERSION="$VERSION_INPUT"
-else
-    # 兼容本地运行：如果目录名包含 rc，能完整抓取类似 25.12.0-rc2 的完整版本
-    VERSION=$(basename "$PWD" | sed -r 's/immortalwrt-imagebuilder-(.*)-x86-64.*/\1/')
-fi
-
-echo "⚙️ 目标官仓固件版本号: $VERSION"
+VERSION="25.12.0"
+echo "⚙️ 当前固件版本号: $VERSION"
 
 # ==========================================
-# 2. 写入远程源（动态锁定输入的具体 RC 或正式版路径）
+# 2. 写入远程源
 # ==========================================
 echo "📝 正在写入 repositories.conf 官仓直供源..."
 cat << EOF > repositories.conf
@@ -31,14 +22,13 @@ src/gz openwrt_routing https://downloads.immortalwrt.org/releases/$VERSION/packa
 src/gz openwrt_telephony https://downloads.immortalwrt.org/releases/$VERSION/packages/x86_64/telephony
 EOF
 
-# ✨ 25.12.x apk 包管理器核心：刷新本地索引
 echo "🔄 正在更新 apk 软件包源索引..."
 make package_index
 
 # ==========================================
-# 3. 写入首次启动网络与防火墙设置
+# 3. 写入首次启动网络与防火墙设置 (192.168.15.15)
 # ==========================================
-echo "🔧 正在写入首次启动网络设置 (静态IP: 192.168.15.15) ..."
+echo "🔧 正在写入首次启动网络设置..."
 mkdir -p files/etc/uci-defaults
 
 cat << 'EOF' > files/etc/uci-defaults/99-custom-settings
@@ -72,21 +62,19 @@ EOF
 chmod +x files/etc/uci-defaults/99-custom-settings
 
 # ==========================================
-# 4. 开启第一遍单线程稳妥下载拼装
+# 4. 核心插件列表
 # ==========================================
-echo "🚀 [第一遍开荒] 开始从零下载并打包固件..."
-
-[ -z "$PROFILE" ] && PROFILE=2048
-
 PACKAGES="base-files netifd luci-compat autocore luci-app-openclash luci-app-adguardhome luci-app-diskman luci-app-samba4 luci-app-ttyd luci-i18n-samba4-zh-cn luci-theme-argon luci-app-passwall luci-i18n-passwall-zh-cn luci-ssl"
 
-if [ "$INCLUDE_DOCKER" = "yes" ]; then
+if [ "$INCLUDE_DOCKER" == "yes" ]; then
     PACKAGES="$PACKAGES luci-app-docker dockerd luci-i18n-docker-zh-cn"
 fi
 
-make image -j1 PROFILE="generic" FILES="files" ROOTFS_PARTSIZE=$PROFILE \
-    PACKAGES="$PACKAGES" \
-    VMDK_IMAGES= QCOW2_IMAGES= VHDX_IMAGES= VDI_IMAGES= ISO_IMAGES=
+# ==========================================
+# 5. 执行打包 (让它把所有虚拟机格式全部高高兴兴生成完)
+# ==========================================
+echo "🚀 [云端开荒] 开始打包全格式固件..."
+make image -j1 PROFILE="generic" FILES="files" ROOTFS_PARTSIZE=$PROFILE PACKAGES="$PACKAGES"
 
 if [ $? -ne 0 ]; then
     echo "❌ 错误: 固件底层拼装失败!"
@@ -94,17 +82,15 @@ if [ $? -ne 0 ]; then
 fi
 
 # ==========================================
-# 5. 后置清理：🔥 强制只留 ext4-combined 包
+# 6. 后置清理：🔥 强制除名！非目标 ext4-combined-efi.img.gz 统统轰杀
 # ==========================================
 OUT_PATH="bin/targets/x86/64"
 [ ! -d "$OUT_PATH" ] && OUT_PATH="bin/targets/x86_64/generic"
 
-echo "🧹 正在按照本地清理逻辑进行碎屑清理..."
-find "$OUT_PATH" -type f ! -name "*ext4-combined*.img.gz" -delete
+echo "🧹 发现大量多余磁盘格式，正在执行精准强制瘦身..."
+# 排除掉我们唯一需要的 ext4-combined-efi.img.gz，剩下产生的几十个各种格式文件全部连根拔起
+find "$OUT_PATH" -type f ! -name "*ext4-combined-efi.img.gz" -delete
 rm -rf "$OUT_PATH/packages" "$OUT_PATH/*.manifest" "$OUT_PATH/*.sha256sums"
 
-# ==========================================
-# 6. 输出成果
-# ==========================================
-echo -e "\n====== 🎉 恭喜！原生云编译顺利通关： ======"
+echo -e "\n====== 🎉 恭喜！全格式依赖顺利跑完，纯正 EXT4 固件在此： ======"
 ls -lh $OUT_PATH/*ext4-combined-efi.img.gz
