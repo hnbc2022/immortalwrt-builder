@@ -1,97 +1,125 @@
-name: Build ImmortalWrt Firmware
+name: Build 25.12.x ISO x86-64
 
 on:
-  workflow_dispatch: # 开启手动触发按钮
-  push:
-    branches:
-      - main       # 当 main 分支有代码变动时自动触发
+  workflow_dispatch:
+    inputs:
+      luci_version:
+        description: "选择luci版本"
+        required: false
+        default: "25.12.0"
+        type: choice
+        options:
+          - 25.12.0-rc1
+          - 25.12.0-rc2
+          - 25.12.0
+      profile:
+        description: '请输入要编译固件大小 单位(MB)'
+        required: true
+        default: '1024'
+      enable_store:
+        description: "集成 store 商店"
+        required: false
+        type: boolean
+        default: false
+      include_docker:
+        description: "是否编译 Docker 插件"
+        required: true
+        default: 'yes'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      enable_pppoe:
+        description: "是否配置PPPoE拨号信息?"
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - 'yes'
+          - 'no'
+      pppoe_account:
+        description: "宽带账号 (若启用PPPoE)"
+        required: false
+      pppoe_password:
+        description: "宽带密码 (若启用PPPoE)"
+        required: false
+
+# 核心权限：必须给 GITHUB_TOKEN 写入权限，否则无法自动创建 Release
+permissions:
+  contents: write
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  build_immortalwrt:
+    runs-on: ubuntu-22.04
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Preparation Environment
+      - name: Set executable permissions
+        run: chmod +x ${{ github.workspace }}/x86-64/build25.sh
+      
+      - name: Validate PPPoE Inputs
         run: |
-          sudo -E apt-get update
-          sudo -E apt-get install -y bzip2 gawk gettext git build-essential unzip wget tar gzip python3 python3-pip
+          if [[ "${{ github.event.inputs.enable_pppoe }}" == "yes" ]]; then
+            if [[ -z "${{ github.event.inputs.pppoe_account }}" || -z "${{ github.event.inputs.pppoe_password }}" ]]; then
+              echo "Error: PPPoE account and password must be provided when PPPoE is enabled!"
+              exit 1
+            fi
+          fi
 
-      - name: Download and Extract ImmortalWrt ImageBuilder
+      - name: Enable Store integration
         run: |
-          IB_VERSION="25.12.0"
-          IB_ARCH="x86-64"
-          IB_FILE="immortalwrt-imagebuilder-${IB_VERSION}-${IB_ARCH}.Linux-x86_64.tar.zst"
-          
-          echo "🔄 正在从官方源下载 ImageBuilder..."
-          wget -q https://downloads.immortalwrt.org/releases/${IB_VERSION}/targets/x86/64/${IB_FILE}
-          
-          echo "📦 正在解压软件包..."
-          tar -I zstd -xf ${IB_FILE}
-          mv immortalwrt-imagebuilder-${IB_VERSION}-${IB_ARCH}.Linux-x86_64 immortalwrt-imagebuilder
-          rm -f ${IB_FILE}
+          if [ "${{ github.event.inputs.enable_store }}" == "true" ]; then
+            echo 'CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"' >> shell/apk-custom-packages.sh
+            echo "✅ 已追加 luci-app-store"
+          else
+            echo "❎ 未启用 luci-app-store"
+          fi
 
-      - name: Execute Custom Build Script
+      - name: ✅ 正在构建ImmortalWrt固件25.12.x
         run: |
-          cd immortalwrt-imagebuilder || exit 1
-          VERSION="25.12.0"
-          
-          echo "📝 正在写入 repositories.conf 官仓直供源..."
-          cat << EOF > repositories.conf
-          src/gz openwrt_core ./packages
-          src/gz openwrt_base https://downloads.immortalwrt.org/releases/\$VERSION/targets/x86/64/packages
-          src/gz openwrt_luci https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/luci
-          src/gz openwrt_packages https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/packages
-          src/gz openwrt_routing https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/routing
-          src/gz openwrt_telephony https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/telephony
-          EOF
-          
-          echo "🔧 正在写入首次启动网络设置 (静态IP: 192.168.15.15) ..."
-          mkdir -p files/etc/uci-defaults
-          
-          cat << 'EOF' > files/etc/uci-defaults/99-custom-settings
-          #!/bin/sh
-          uci set network.lan.proto='static'
-          uci set network.lan.ipaddr='192.168.15.15'
-          uci set network.lan.netmask='255.255.255.0'
-          uci set network.lan.gateway='192.168.15.1'
-          uci del_list network.lan.dns='192.168.15.1' 2>/dev/null
-          uci add_list network.lan.dns='192.168.15.1'
-          uci add_list network.lan.dns='114.114.114.114'
-          uci set dhcp.lan.ignore='1'
-          uci set firewall.@defaults[0].input='ACCEPT'
-          uci set firewall.@defaults[0].output='ACCEPT'
-          uci set firewall.@defaults[0].forward='ACCEPT'
-          sysctl -w net.bridge.bridge-nf-call-arptables=0
-          sysctl -w net.bridge.bridge-nf-call-ip6tables=0
-          sysctl -w net.bridge.bridge-nf-call-iptables=0
-          uci set uhttpd.main.listen_https='0.0.0.0:443'
-          uci del_list uhttpd.main.listen_https='[::]:443' 2>/dev/null
-          uci add_list uhttpd.main.listen_https='[::]:443'
-          uci set uhttpd.main.rfc1918_filter='0'
-          uci set uhttpd.main.redirect_https='0'
-          uci commit network
-          uci commit dhcp
-          uci commit firewall
-          uci commit uhttpd
-          exit 0
-          EOF
-          
-          chmod +x files/etc/uci-defaults/99-custom-settings
-          
-          echo "🚀 开始并发打包固件..."
-          make image -j$(nproc) PROFILE="generic" FILES="files" ROOTFS_PARTSIZE=2048 \
-          PACKAGES="base-files netifd luci-compat autocore luci-app-openclash luci-app-adguardhome luci-app-diskman luci-app-samba4 luci-app-docker dockerd luci-app-ttyd luci-i18n-samba4-zh-cn luci-i18n-docker-zh-cn luci-theme-argon luci-app-passwall luci-i18n-passwall-zh-cn luci-ssl" \
-          VMDK_IMAGES= QCOW2_IMAGES= VHDX_IMAGES= VDI_IMAGES= ISO_IMAGES=
-          
-          echo "🧹 执行后置清理..."
-          OUT_PATH="bin/targets/x86/64"
-          find "$OUT_PATH" -type f ! -name "*squashfs-combined*.img.gz" -delete
-          rm -rf "$OUT_PATH/packages" "$OUT_PATH/*.manifest" "$OUT_PATH/*.sha256sums"
+          profile="${{ github.event.inputs.profile }}"
+          include_docker="${{ github.event.inputs.include_docker }}"
+          luci_version="${{ github.event.inputs.luci_version }}"
+          echo "Building for profile: $profile"
+          docker run --rm -i \
+            --user root \
+            -v "${{ github.workspace }}/bin:/home/build/immortalwrt/bin" \
+            -v "${{ github.workspace }}/files:/home/build/immortalwrt/files" \
+            -v "${{ github.workspace }}/custom:/home/build/immortalwrt/files/etc/config" \
+            -v "${{ github.workspace }}/x86-64/imm25.config:/home/build/immortalwrt/.config" \
+            -v "${{ github.workspace }}/shell:/home/build/immortalwrt/shell" \
+            -v "${{ github.workspace }}/x86-64/build25.sh:/home/build/immortalwrt/build.sh" \
+            -e PROFILE=$profile \
+            -e INCLUDE_DOCKER=$include_docker \
+            -e ENABLE_PPPOE=${{ github.event.inputs.enable_pppoe }} \
+            -e PPPOE_ACCOUNT=${{ github.event.inputs.pppoe_account }} \
+            -e PPPOE_PASSWORD=${{ github.event.inputs.pppoe_password }} \
+          immortalwrt/imagebuilder:x86-64-openwrt-${luci_version} /bin/bash /home/build/immortalwrt/build.sh
 
-      - name: Upload Firmware Artifact
-        uses: actions/upload-artifact@v4
+      - name: ✅ 复制固件到根目录并生成动态标签
+        id: tag
+        run: |
+          cp ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz ${{ github.workspace }}
+          # 用当天日期和时间生成一个绝不重复的 Release 标签（例如：2026.06.26-1430）
+          echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
+
+      # =======================================================
+      # ✨ 核心新增：直接将生成的 img.gz 固件发布到 Release 页面
+      # =======================================================
+      - name: 🚀 自动发布到 GitHub Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: ImmortalWrt-Combined-EFI
-          path: immortalwrt-imagebuilder/bin/targets/x86/64/*-squashfs-combined-efi.img.gz
+          tag_name: ${{ steps.tag.outputs.release_tag }}
+          name: "ImmortalWrt 自编译固件 [${{ github.event.inputs.luci_version }}]"
+          body: |
+            ## 固件编译成功！🎉
+            
+            - **LuCI 版本**: `${{ github.event.inputs.luci_version }}`
+            - **核心组件**: OpenClash, AdGuardHome, Passwall, Docker
+            - **后台默认静态 IP**: `192.168.15.15`
+            - **编译时间**: ${{ steps.tag.outputs.release_tag }}
+          files: |
+            *.img.gz
+          token: ${{ secrets.GITHUB_TOKEN }}
