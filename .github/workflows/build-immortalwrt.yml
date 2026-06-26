@@ -1,0 +1,97 @@
+name: Build ImmortalWrt Firmware
+
+on:
+  workflow_dispatch: # 开启手动触发按钮
+  push:
+    branches:
+      - main       # 当 main 分支有代码变动时自动触发
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Preparation Environment
+        run: |
+          sudo -E apt-get update
+          sudo -E apt-get install -y bzip2 gawk gettext git build-essential unzip wget tar gzip python3 python3-pip
+
+      - name: Download and Extract ImmortalWrt ImageBuilder
+        run: |
+          IB_VERSION="25.12.0"
+          IB_ARCH="x86-64"
+          IB_FILE="immortalwrt-imagebuilder-${IB_VERSION}-${IB_ARCH}.Linux-x86_64.tar.zst"
+          
+          echo "🔄 正在从官方源下载 ImageBuilder..."
+          wget -q https://downloads.immortalwrt.org/releases/${IB_VERSION}/targets/x86/64/${IB_FILE}
+          
+          echo "📦 正在解压软件包..."
+          tar -I zstd -xf ${IB_FILE}
+          mv immortalwrt-imagebuilder-${IB_VERSION}-${IB_ARCH}.Linux-x86_64 immortalwrt-imagebuilder
+          rm -f ${IB_FILE}
+
+      - name: Execute Custom Build Script
+        run: |
+          cd immortalwrt-imagebuilder || exit 1
+          VERSION="25.12.0"
+          
+          echo "📝 正在写入 repositories.conf 官仓直供源..."
+          cat << EOF > repositories.conf
+          src/gz openwrt_core ./packages
+          src/gz openwrt_base https://downloads.immortalwrt.org/releases/\$VERSION/targets/x86/64/packages
+          src/gz openwrt_luci https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/luci
+          src/gz openwrt_packages https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/packages
+          src/gz openwrt_routing https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/routing
+          src/gz openwrt_telephony https://downloads.immortalwrt.org/releases/\$VERSION/packages/x86_64/telephony
+          EOF
+          
+          echo "🔧 正在写入首次启动网络设置 (静态IP: 192.168.15.15) ..."
+          mkdir -p files/etc/uci-defaults
+          
+          cat << 'EOF' > files/etc/uci-defaults/99-custom-settings
+          #!/bin/sh
+          uci set network.lan.proto='static'
+          uci set network.lan.ipaddr='192.168.15.15'
+          uci set network.lan.netmask='255.255.255.0'
+          uci set network.lan.gateway='192.168.15.1'
+          uci del_list network.lan.dns='192.168.15.1' 2>/dev/null
+          uci add_list network.lan.dns='192.168.15.1'
+          uci add_list network.lan.dns='114.114.114.114'
+          uci set dhcp.lan.ignore='1'
+          uci set firewall.@defaults[0].input='ACCEPT'
+          uci set firewall.@defaults[0].output='ACCEPT'
+          uci set firewall.@defaults[0].forward='ACCEPT'
+          sysctl -w net.bridge.bridge-nf-call-arptables=0
+          sysctl -w net.bridge.bridge-nf-call-ip6tables=0
+          sysctl -w net.bridge.bridge-nf-call-iptables=0
+          uci set uhttpd.main.listen_https='0.0.0.0:443'
+          uci del_list uhttpd.main.listen_https='[::]:443' 2>/dev/null
+          uci add_list uhttpd.main.listen_https='[::]:443'
+          uci set uhttpd.main.rfc1918_filter='0'
+          uci set uhttpd.main.redirect_https='0'
+          uci commit network
+          uci commit dhcp
+          uci commit firewall
+          uci commit uhttpd
+          exit 0
+          EOF
+          
+          chmod +x files/etc/uci-defaults/99-custom-settings
+          
+          echo "🚀 开始并发打包固件..."
+          make image -j$(nproc) PROFILE="generic" FILES="files" ROOTFS_PARTSIZE=2048 \
+          PACKAGES="base-files netifd luci-compat autocore luci-app-openclash luci-app-adguardhome luci-app-diskman luci-app-samba4 luci-app-docker dockerd luci-app-ttyd luci-i18n-samba4-zh-cn luci-i18n-docker-zh-cn luci-theme-argon luci-app-passwall luci-i18n-passwall-zh-cn luci-ssl" \
+          VMDK_IMAGES= QCOW2_IMAGES= VHDX_IMAGES= VDI_IMAGES= ISO_IMAGES=
+          
+          echo "🧹 执行后置清理..."
+          OUT_PATH="bin/targets/x86/64"
+          find "$OUT_PATH" -type f ! -name "*squashfs-combined*.img.gz" -delete
+          rm -rf "$OUT_PATH/packages" "$OUT_PATH/*.manifest" "$OUT_PATH/*.sha256sums"
+
+      - name: Upload Firmware Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImmortalWrt-Combined-EFI
+          path: immortalwrt-imagebuilder/bin/targets/x86/64/*-squashfs-combined-efi.img.gz
