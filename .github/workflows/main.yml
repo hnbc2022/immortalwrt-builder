@@ -1,4 +1,4 @@
-name: Build 25.12.x ISO x86-64
+name: Build 25.12.x IMG.GZ x86-64
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ on:
       profile:
         description: '请输入要编译固件大小 单位(MB)'
         required: true
-        default: '1024'
+        default: '2048' # 对应你本地的 ROOTFS_PARTSIZE=2048
       enable_store:
         description: "集成 store 商店"
         required: false
@@ -29,22 +29,7 @@ on:
         options:
           - 'yes'
           - 'no'
-      enable_pppoe:
-        description: "是否配置PPPoE拨号信息?"
-        required: true
-        default: 'no'
-        type: choice
-        options:
-          - 'yes'
-          - 'no'
-      pppoe_account:
-        description: "宽带账号 (若启用PPPoE)"
-        required: false
-      pppoe_password:
-        description: "宽带密码 (若启用PPPoE)"
-        required: false
 
-# 核心权限：必须给 GITHUB_TOKEN 写入权限，否则无法自动创建 Release
 permissions:
   contents: write
 
@@ -56,70 +41,64 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Create local directories
+        run: |
+          mkdir -p bin files custom shell
+
       - name: Set executable permissions
         run: chmod +x ${{ github.workspace }}/x86-64/build25.sh
       
-      - name: Validate PPPoE Inputs
-        run: |
-          if [[ "${{ github.event.inputs.enable_pppoe }}" == "yes" ]]; then
-            if [[ -z "${{ github.event.inputs.pppoe_account }}" || -z "${{ github.event.inputs.pppoe_password }}" ]]; then
-              echo "Error: PPPoE account and password must be provided when PPPoE is enabled!"
-              exit 1
-            fi
-          fi
-
       - name: Enable Store integration
         run: |
           if [ "${{ github.event.inputs.enable_store }}" == "true" ]; then
-            echo 'CUSTOM_PACKAGES="$CUSTOM_PACKAGES luci-app-store"' >> shell/apk-custom-packages.sh
-            echo "✅ 已追加 luci-app-store"
+            echo 'export CUSTOM_PACKAGES="luci-app-store"' >> shell/apk-custom-packages.sh
+            echo "✅ 已预备追加 luci-app-store"
           else
             echo "❎ 未启用 luci-app-store"
           fi
 
-      - name: ✅ 正在构建ImmortalWrt固件25.12.x
+      - name: ✅ 正在本地容器化构建ImmortalWrt固件
         run: |
           profile="${{ github.event.inputs.profile }}"
           include_docker="${{ github.event.inputs.include_docker }}"
           luci_version="${{ github.event.inputs.luci_version }}"
-          echo "Building for profile: $profile"
+          
           docker run --rm -i \
             --user root \
             -v "${{ github.workspace }}/bin:/home/build/immortalwrt/bin" \
             -v "${{ github.workspace }}/files:/home/build/immortalwrt/files" \
             -v "${{ github.workspace }}/custom:/home/build/immortalwrt/files/etc/config" \
-            -v "${{ github.workspace }}/x86-64/imm25.config:/home/build/immortalwrt/.config" \
             -v "${{ github.workspace }}/shell:/home/build/immortalwrt/shell" \
             -v "${{ github.workspace }}/x86-64/build25.sh:/home/build/immortalwrt/build.sh" \
             -e PROFILE=$profile \
             -e INCLUDE_DOCKER=$include_docker \
-            -e ENABLE_PPPOE=${{ github.event.inputs.enable_pppoe }} \
-            -e PPPOE_ACCOUNT=${{ github.event.inputs.pppoe_account }} \
-            -e PPPOE_PASSWORD=${{ github.event.inputs.pppoe_password }} \
-          immortalwrt/imagebuilder:x86-64-openwrt-${luci_version} /bin/bash /home/build/immortalwrt/build.sh
+            immortalwrt/imagebuilder:x86-64-openwrt-${luci_version} /bin/bash /home/build/immortalwrt/build.sh
 
-      - name: ✅ 复制固件到根目录并生成动态标签
+      # =======================================================
+      # ✨ 核心控制：精准提取 .img.gz 并生成 Release 标签
+      # =======================================================
+      - name: ✅ 精准限制：提取唯一 .img.gz 固件
         id: tag
         run: |
-          cp ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz ${{ github.workspace }}
-          # 用当天日期和时间生成一个绝不重复的 Release 标签（例如：2026.06.26-1430）
+          # 只把唯一的压缩包复制到宿主机根目录，把别的垃圾文件留在 bin 里随着 Docker 销毁而气化
+          cp ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz ${{ github.workspace }}/
+          
+          # 生成唯一的日期时间标签（例如 2026.06.26-1500）
           echo "release_tag=$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_OUTPUT
 
-      # =======================================================
-      # ✨ 核心新增：直接将生成的 img.gz 固件发布到 Release 页面
-      # =======================================================
-      - name: 🚀 自动发布到 GitHub Release
+      - name: 🚀 自动发布 .img.gz 固件到 GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
-          name: "ImmortalWrt 自编译固件 [${{ github.event.inputs.luci_version }}]"
+          name: "ImmortalWrt 固件 [${{ github.event.inputs.luci_version }}] (.img.gz)"
           body: |
-            ## 固件编译成功！🎉
+            ## 固件云编译成功！🎉
             
-            - **LuCI 版本**: `${{ github.event.inputs.luci_version }}`
-            - **核心组件**: OpenClash, AdGuardHome, Passwall, Docker
-            - **后台默认静态 IP**: `192.168.15.15`
-            - **编译时间**: ${{ steps.tag.outputs.release_tag }}
+            - **LuCI 核心基础**: `${{ github.event.inputs.luci_version }}`
+            - **网络默认静态 IP**: `192.168.15.15`
+            - **输出格式**: `📦 .img.gz 压缩包`
+            - **内置本地精选插件**: OpenClash, AdGuardHome, Passwall, Samba4, Docker
           files: |
-            *.img.gz
+            # 严格限制：只发布我们复制出来的 .img.gz 压缩包
+            *-squashfs-combined-efi.img.gz
           token: ${{ secrets.GITHUB_TOKEN }}
