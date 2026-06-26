@@ -1,16 +1,12 @@
 #!/bin/bash
 # ==========================================
-# 1. 基础环境与网络准备 (对齐 Docker 容器内部路径)
+# 1. 基础环境与网络准备
 # ==========================================
-BASE_DIR="/home/build/immortalwrt"
+unset http_proxy
+unset https_proxy
 
-# 进入容器内挂载的编译建筑工目录
-cd "$BASE_DIR" || exit 1
-
-echo "🔄 [云端容器内部] 正在初始化全新编译环境..."
-
-# 提取当前 Image Builder 的固件版本号
-VERSION="25.12.0"
+echo "🔄 [原生虚拟机环境] 正在初始化全新编译环境..."
+VERSION=$(basename "$PWD" | cut -d'-' -f3)
 echo "?? 当前固件版本号: $VERSION"
 
 # ==========================================
@@ -26,15 +22,13 @@ src/gz openwrt_routing https://downloads.immortalwrt.org/releases/$VERSION/packa
 src/gz openwrt_telephony https://downloads.immortalwrt.org/releases/$VERSION/packages/x86_64/telephony
 EOF
 
-# 如果在前端网页勾选了集成 store 商店，则动态追加
-if [ -f "shell/apk-custom-packages.sh" ]; then
-    source shell/apk-custom-packages.sh
-fi
+echo "🔄 正在更新 apk 软件包源索引..."
+make package_index
 
 # ==========================================
-# 3. 写入首次启动网络与防火墙设置 (静态IP: 192.168.15.15)
+# 3. 写入首次启动网络与防火墙设置 (192.168.15.15)
 # ==========================================
-echo "🔧 正在写入首次启动网络设置 (静态IP: 192.168.15.15) ..."
+echo "🔧 正在写入首次启动网络设置..."
 mkdir -p files/etc/uci-defaults
 
 cat << 'EOF' > files/etc/uci-defaults/99-custom-settings
@@ -68,28 +62,36 @@ EOF
 chmod +x files/etc/uci-defaults/99-custom-settings
 
 # ==========================================
-# 4. 动态组合包列表
+# 4. 完美继承你本地选定的全套核心插件列表
 # ==========================================
-# 基础核心包与你本地选定的全套核心插件
-PACKAGES_LIST="base-files netifd luci-compat autocore luci-app-openclash luci-app-adguardhome luci-app-diskman luci-app-samba4 luci-app-ttyd luci-i18n-samba4-zh-cn luci-theme-argon luci-app-passwall luci-i18n-passwall-zh-cn luci-ssl"
+PACKAGES="base-files netifd luci-compat autocore luci-app-openclash luci-app-adguardhome luci-app-diskman luci-app-samba4 luci-app-ttyd luci-i18n-samba4-zh-cn luci-theme-argon luci-app-passwall luci-i18n-passwall-zh-cn luci-ssl"
 
-# 根据 GitHub 网页端勾选，决定是否集成 Docker 插件
 if [ "$INCLUDE_DOCKER" == "yes" ]; then
-    PACKAGES_LIST="$PACKAGES_LIST luci-app-docker dockerd luci-i18n-docker-zh-cn"
-fi
-
-# 引入外部可能追加的自定义包（如 App Store）
-if [ -n "$CUSTOM_PACKAGES" ]; then
-    PACKAGES_LIST="$PACKAGES_LIST $CUSTOM_PACKAGES"
+    PACKAGES="$PACKAGES luci-app-docker dockerd luci-i18n-docker-zh-cn"
 fi
 
 # ==========================================
-# 5. 执行多线程并发拼装 (在 Docker 内部工具齐备，绝不报错)
+# 5. 开启第一遍稳妥打包拼装 (-j1 单线程稳如老狗)
 # ==========================================
-echo "🚀 建筑工开始并发打包固件..."
-# 对齐规避参数：拦截多余镜像，只把宿主机传入的 $PROFILE（如 2048）赋给分区大小
-make image -j$(nproc) PROFILE="generic" FILES="files" ROOTFS_PARTSIZE=$PROFILE \
-    PACKAGES="$PACKAGES_LIST" \
+echo "🚀 [本地化开荒] 开始打包固件..."
+make image -j1 PROFILE="generic" FILES="files" ROOTFS_PARTSIZE=$PROFILE \
+    PACKAGES="$PACKAGES" \
     VMDK_IMAGES= QCOW2_IMAGES= VHDX_IMAGES= VDI_IMAGES= ISO_IMAGES=
 
-echo "✅ 容器内部打包流程顺利结束！"
+if [ $? -ne 0 ]; then
+    echo "❌ 错误: 固件底层拼装失败!"
+    exit 1
+fi
+
+# ==========================================
+# 6. 后置清理：🔥 强制只留 ext4-combined 包，其余全轰杀
+# ==========================================
+OUT_PATH="bin/targets/x86/64"
+[ ! -d "$OUT_PATH" ] && OUT_PATH="bin/targets/x86_64/generic"
+
+# 排除含有 ext4-combined 的文件，其他全部干掉
+find "$OUT_PATH" -type f ! -name "*ext4-combined*.img.gz" -delete
+rm -rf "$OUT_PATH/packages" "$OUT_PATH/*.manifest" "$OUT_PATH/*.sha256sums"
+
+echo -e "\n====== 🎉 恭喜！纯正 EXT4 固件完工： ======"
+ls -lh $OUT_PATH/*ext4-combined-efi.img.gz
