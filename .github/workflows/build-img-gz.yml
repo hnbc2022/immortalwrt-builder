@@ -1,23 +1,14 @@
 # 此工作流完全模仿本地 wubuntu 实体机运行逻辑
-# 自动化编译完成后，精准提取唯一的 ext4-combined-efi.img.gz 固件并自动发布到 Release 页面
+# 锁定官方 25.12.0 最新固件的 .tar.zst 编译器格式，编译后只发布 ext4-combined-efi.img.gz
 name: Build 25.12.x IMG.GZ x86-64
 
 on:
   workflow_dispatch:
     inputs:
-      luci_version:
-        description: "选择luci版本"
-        required: false
-        default: "25.12.0"
-        type: choice
-        options:
-          - 25.12.0-rc1
-          - 25.12.0-rc2
-          - 25.12.0
       profile:
         description: '请输入要编译固件大小 单位(MB)'
         required: true
-        default: '2048' # 对齐你本地的默认大小
+        default: '2048'
       include_docker:
         description: "是否编译 Docker 插件"
         required: true
@@ -38,30 +29,33 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: ⚙️ 安装本地编译所需基础依赖包 (完全模拟 wubuntu 环境)
+      - name: ⚙️ 安装本地编译与 Zstd 解压所需依赖 (完全模拟 wubuntu 环境)
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential libncurses5-dev libncursesw5-dev \
             zlib1g-dev gawk git gettext libssl-dev xz-utils patch unzip subversion \
-            flex bison python3 python3-pip
+            flex bison python3 python3-pip wget zstd
 
-      - name: ⏬ 官仓直供：直接下载新版 Image Builder 编译器
+      - name: ⏬ 官仓直供：使用直接链接下载新版 Zst 编译器
         run: |
           mkdir -p /home/runner/immortalwrt_build
           cd /home/runner/immortalwrt_build
-          VERSION="${{ github.event.inputs.luci_version }}"
-          IB_NAME="immortalwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64"
-          URL="https://downloads.immortalwrt.org/releases/${VERSION}/targets/x86/64/${IB_NAME}.tar.xz"
           
-          echo "📥 正在下载官仓编译器: $URL"
-          wget -q "$URL"
-          tar -xJf "${IB_NAME}.tar.xz"
-          rm -f "${IB_NAME}.tar.xz"
+          # 完全锁定你提供的官方最新直接链接
+          URL="https://downloads.immortalwrt.org/releases/25.12.0/targets/x86/64/immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64.tar.zst"
+          
+          echo "📥 正在通过直接链接下载官仓 Zst 编译器..."
+          wget -q --show-progress "$URL"
+          
+          echo "📦 正在使用 zstd 强力解压..."
+          tar -I zstd -xf "immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64.tar.zst"
+          
+          rm -f "immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64.tar.zst"
 
       - name: 🚚 同步并组合本地建筑材料
         run: |
-          VERSION="${{ github.event.inputs.luci_version }}"
-          TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64"
+          TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64"
+          echo "🚚 正在向原生工作区同步配置文件: $TARGET_DIR"
           
           mkdir -p "$TARGET_DIR/files" "$TARGET_DIR/shell"
           [ -d "${{ github.workspace }}/files" ] && cp -r ${{ github.workspace }}/files/* "$TARGET_DIR/files/" || true
@@ -75,19 +69,18 @@ jobs:
         env:
           PROFILE: ${{ github.event.inputs.profile }}
           INCLUDE_DOCKER: ${{ github.event.inputs.include_docker }}
-          VERSION_INPUT: ${{ github.event.inputs.luci_version }}
+          VERSION_INPUT: "25.12.0"
         run: |
-          TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-${VERSION_INPUT}-x86-64.Linux-x86_64"
+          TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64"
           cd "$TARGET_DIR"
           ./build25.sh
 
       - name: ✅ 精准拦截：提取唯一的 ext4-combined-efi.img.gz 到工作区
         id: tag
         run: |
-          VERSION="${{ github.event.inputs.luci_version }}"
-          TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-${VERSION}-x86-64.Linux-x86_64"
+          TARGET_DIR="/home/runner/immortalwrt_build/immortalwrt-imagebuilder-25.12.0-x86-64.Linux-x86_64"
           
-          # 雷达扫描：跨越新老版输出路径层级，只捞取目标 ext4 压缩包
+          # 只捞取目标 ext4 压缩包
           find "$TARGET_DIR/bin/targets" -name "*ext4-combined-efi.img.gz" -exec cp {} ${{ github.workspace }}/ \;
           
           # 安全校验机制
@@ -106,14 +99,13 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.tag.outputs.release_tag }}
-          name: "ImmortalWrt [${{ github.event.inputs.luci_version }}] EXT4 固件"
+          name: "ImmortalWrt 25.12.0 EXT4 固件"
           body: |
             ## 🎉 固件原生云编译成功！
             
+            - **文件系统类型**: `📦 EXT4 (支持系统内直接自由扩容)`
             - **网关默认静态 IP**: `192.168.15.15`
-            - **文件系统类型**: `📦 EXT4 (专属纯净格式，支持系统内直接自由扩容)`
-            - **集成精选插件**: OpenClash, AdGuardHome, Passwall, Samba4, Docker 汉化管理
+            - **底座编译器**: 基于官方全新的 `.tar.zst` 容器构建
           files: |
-            # 锁定发布目标，其余任何格式概不上报
             *ext4-combined-efi.img.gz
           token: ${{ secrets.GITHUB_TOKEN }}
